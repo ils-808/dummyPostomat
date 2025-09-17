@@ -12,6 +12,7 @@ from typing import Dict, List, Optional, Literal
 
 from fastapi import FastAPI, Header, HTTPException, Depends
 from pydantic import BaseModel
+from fastapi.responses import JSONResponse
 
 Size = Literal["S", "M", "L"]
 
@@ -273,13 +274,14 @@ def get_order(order_id: str, ctx = Depends(get_ctx)):
 
 @app.get("/", summary="Корень API", description="Служебная информация о сервисе.")
 def root():
-    return {
+    payload = {
         "service": "postomat-demo-fastapi",
         "version": "3.1.0",
         "docs": "/docs",
         "openapi": "/openapi.json",
         "note": "Сначала вызовите /seed для получения X-Seed-Key, затем используйте его в заголовке."
     }
+    return JSONResponse(payload, media_type="application/json; charset=utf-8")
 
 def _get_cell_by_id(seed: Seed, cell_id: Optional[str]) -> Cell:
     if not cell_id:
