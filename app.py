@@ -292,6 +292,12 @@ def root():
     }
     return JSONResponse(payload, media_type="application/json; charset=utf-8")
 
+
+@app.head("/", include_in_schema=False)
+def root_head():
+    """Root endpoint for HEAD requests (monitoring)"""
+    return JSONResponse(content={}, status_code=200)
+
 def _get_cell_by_id(seed: Seed, cell_id: Optional[str]) -> Cell:
     if not cell_id:
         raise HTTPException(status_code=409, detail="У заказа нет ячейки")
