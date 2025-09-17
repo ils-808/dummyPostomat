@@ -60,7 +60,7 @@ class DepositBody(BaseModel):
 
 class DepositResp(BaseModel):
     cellId: str
-    opened: bool
+    accepted: bool
 
 class PickupBody(BaseModel):
     orderId: str
@@ -68,6 +68,9 @@ class PickupBody(BaseModel):
 
 class PickupResp(BaseModel):
     opened: bool
+
+class CollectResp(BaseModel):
+     opened: bool
 
 class ReturnExpireBody(BaseModel):
     orderId: str
@@ -113,7 +116,7 @@ def get_ctx(x_seed_key: Optional[str] = Header(None, alias="X-Seed-Key")) -> Dic
         raise HTTPException(status_code=400, detail="Seed для данного X-Seed-Key не найден. Сначала вызовите /seed")
     return ctx
 
-@app.post("/seed", response_model=SeedResp, summary="Инициализация данных", description="Создаёт возвращает X-Seed-Key, список ячеек и товаров.")
+@app.post("/seed", response_model=SeedResp, summary="Инициализация данных", description="Возвращает X-Seed-Key, список ячеек и товаров.")
 def seed():
     key = str(uuid.uuid4())
     cells = [
@@ -181,7 +184,7 @@ def deposit(body: DepositBody, ctx = Depends(get_ctx)):
     order.cell_id = free_cell.id
     order.status = OrderStatus.STORED
 
-    return DepositResp(cellId=free_cell.id, opened=True)
+    return DepositResp(cellId=free_cell.id, accepted=True)
 
 @app.post(
     "/pickup",
@@ -204,7 +207,8 @@ def pickup(body: PickupBody, ctx = Depends(get_ctx)):
     if body.code != order.code:
         raise HTTPException(status_code=403, detail="Неверный PIN-код")
 
-    cell = _get_cell_by_id(seed, order.cell_id)
+    if order.client_open_count == 0:
+        cell = _get_cell_by_id(seed, order.cell_id)
 
     # БАГ #2: Лимит открытий клиентом (≤2) не применяется — можно открывать бесконечно
     order.client_open_count += 1
@@ -214,6 +218,7 @@ def pickup(body: PickupBody, ctx = Depends(get_ctx)):
         # БАГ #4: Статус заказа не меняется на PICKED после успешного pickup
         # order.status = OrderStatus.PICKED
         cell.status = CellStatus.FREE
+        order.cell_id = None
 
     # Дальше (3-е и более) — всё равно opened=True, несмотря на то, что заказ уже PICKED и ячейка FREE.
     return PickupResp(opened=True)
@@ -226,21 +231,24 @@ def return_expire(body: ReturnExpireBody, ctx = Depends(get_ctx)):
     order = orders.get(body.orderId)
     if not order:
         raise HTTPException(status_code=404, detail="Заказ не найден")
-    if order.expired_marked:
-        raise HTTPException(status_code=409, detail="Заказ уже был протухшим")
     # БАГ #5: Разрешаем повторное "протухание" — допускаем EXPIRED в допустимых статусах
-    if order.status not in (OrderStatus.CREATED, OrderStatus.STORED, OrderStatus.EXPIRED):
+    # if order.expired_marked:
+    #     raise HTTPException(status_code=409, detail="Заказ уже был протухшим")
+    # БАГ #5: Разрешаем повторное "протухание" — допускаем EXPIRED в допустимых статусах
+    if order.status not in (OrderStatus.STORED, OrderStatus.EXPIRED): # вынес OrderStatus.CREATED,
         raise HTTPException(status_code=409, detail="Заказ не в подходящем статусе для протухания")
+    if not order.cell_id:
+        raise HTTPException(status_code=409, detail="Невозможно сделать протухшим заказ без ячейки")
 
     order.status = OrderStatus.EXPIRED
     # БАГ #5: Разрешаем повторное "протухание" — допускаем EXPIRED в допустимых статусах
-    # order.expired_marked = True
+    order.expired_marked = True
     if order.cell_id:
         cell = _get_cell_by_id(seed, order.cell_id)
         cell.status = CellStatus.RETURN_PENDING
     return {"expiredOrder": order.id}
 
-@app.post("/return/collect", response_model=PickupResp, summary="Возврат курьером", description="Курьер открывает ячейку и забирает невостребованную посылку")
+@app.post("/return/collect", response_model=CollectResp, summary="Возврат курьером", description="Курьер открывает ячейку и забирает невостребованную посылку")
 def return_collect(body: ReturnCollectBody, ctx = Depends(get_ctx)):
     seed: Seed = ctx["seed"]  # type: ignore
     orders: Dict[str, Order] = ctx["orders"]  # type: ignore
@@ -252,12 +260,13 @@ def return_collect(body: ReturnCollectBody, ctx = Depends(get_ctx)):
         raise HTTPException(status_code=409, detail="Заказ должен быть в статусе EXPIRED")
 
     cell = _get_cell_by_id(seed, order.cell_id)
+    order.cell_id = None
 
     # курьерское открытие не учитываем в лимите клиента
     order.status = OrderStatus.RETURNED
 
     # БАГ #3: ячейка остаётся в RETURN_PENDING, не освобождаем
-    return PickupResp(opened=True)
+    return CollectResp(opened=True)
 
 @app.get("/cells", response_model=CellsResp, summary="Список ячеек", description="Возвращает текущее состояние всех ячеек.")
 def list_cells(ctx = Depends(get_ctx)):
